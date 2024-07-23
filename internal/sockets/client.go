@@ -3,8 +3,15 @@ package sockets
 import (
 	"encoding/json"
 	"log"
+	"time"
 
 	"github.com/gorilla/websocket"
+)
+
+const (
+	pingInterval   = 10 * time.Second
+	pongWait       = 15 * time.Second
+	maxMessageSize = 1024
 )
 
 type Client struct {
@@ -26,6 +33,13 @@ func NewWebsocketClient(userId string, conn *websocket.Conn, manager WebsocketMa
 func (c *Client) ReadMessage() {
 	log.Printf("Reading messages from the webscoket client. userId=%v...", c.userId)
 	defer c.Close()
+
+	c.conn.SetReadLimit(maxMessageSize)
+	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(appData string) error {
+		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
 
 	for {
 		_, message, err := c.conn.ReadMessage()
@@ -53,10 +67,22 @@ func (c *Client) WriteMessage() {
 	log.Printf("Writing messsages to the websocket client. userId=%v...", c.userId)
 	defer c.Close()
 
-	for message := range c.messages {
-		if err := c.conn.WriteJSON(message); err != nil {
-			log.Printf("Error while sending message. Err=%v\n", err)
-			return
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case message := <-c.messages:
+			if err := c.conn.WriteJSON(message); err != nil {
+				log.Printf("Error while sending message. userId=%v, err=%v", c.userId, err)
+				return
+			}
+		case <-ticker.C:
+			log.Println("Sending ping")
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("Error while sending ping. userId=%v, err=%v", c.userId, err)
+				return
+			}
 		}
 	}
 }
